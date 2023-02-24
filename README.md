@@ -9,11 +9,12 @@ Final project for COGS 181 WI23. This project proposed a possible way to improve
 
 ## TO-DO
  - [x] Upsampling layer
-   - [ ] Test
+   - [x] Test (input-output shape)
  - [x] Downsampling layer
-   - [ ] Test
+   - [x] Test (input-output shape)
  - [ ] AdaIN layer
-   - [ ] Test
+   - [ ] Test (input-output shape)
+   - [ ] AdaIN
  - [ ] U-net Model
  - [ ] Data pipeline
    - [ ] DataSet
