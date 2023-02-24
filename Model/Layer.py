@@ -118,7 +118,6 @@ class Up(nn.Module):
             )
 
       #up-conv
-      #I'm not 100% sure here
         self.up_conv = None
         if not last_layer:
             self.up_conv = nn.ConvTranspose2d(\
