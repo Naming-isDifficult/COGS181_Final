@@ -12,11 +12,13 @@ Final project for COGS 181 WI23. This project proposed a possible way to improve
    - [x] Test (input-output shape)
  - [x] Downsampling layer
    - [x] Test (input-output shape)
- - [ ] AdaIN layer
-   - [ ] Test (input-output shape)
-   - [ ] AdaIN
+ - [x] AdaIN layer
+   - [x] Test (input-output shape)
+   - [x] AdaIN
  - [ ] U-net Model
+ - [ ] UAdaIN Model
  - [ ] Data pipeline
    - [ ] DataSet
    - [ ] DataLoader
+ - [ ] Pretraining
  - [ ] Training

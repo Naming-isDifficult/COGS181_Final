@@ -122,7 +122,8 @@ class Up(nn.Module):
     def forward(self, x):
         out = self.conv1(x)
         out = self.conv2(out)
-        out = self.up_conv(out)
+        if up_conv is not None:
+            out = self.up_conv(out)
 
         return out
 
@@ -187,7 +188,44 @@ class AdaIN(nn.Module):
                           kernel_size = (2,2),\
                           stride = 2) #output_channel=input_channel
 
-    #helper method to perform AdaIN on input
-    def adain(self, content, style):
+    #helper method to calculate instance mean
+    #assuming x.shape = [batch, channel, height, width]
+    #output should have shape [batch, channel, 1, 1]
+    def calc_mean(self, x):
+        return torch.mean(x, dim=[2,3], keepdim=True)
 
-      
+    #helper method to calculate instance standard deviation
+    #assuming x.shape = [batch, channel, height, width]
+    #output should have shape [batch, channel, 1, 1]
+    def calc_std(self, x):
+        return torch.std(x, unbiased = False, dim=[2,3], keepdim=True) + 1e-5
+                #add an extremely small value to avoid nan
+
+    #helper method to perform AdaIN on input
+    #assuming content.shape = style.shape = [batch, channel, height, width]
+    #output should have shape [batch, channel, height, width]
+    def adain(self, content, style):
+        content_mean = self.calc_mean(content)
+        content_sd = self.calc_std(content)
+        style_mean = self.calc_mean(style)
+        style_sd = self.calc_std(style)
+
+        #perform adain
+        out = style_sd * (content - content_mean) / content_sd\
+                + style_mean
+
+        return out
+
+    def forward(self, x):
+        #unpack x
+        content, style = x
+
+        #adain
+        latent = self.adain(content, style)
+
+        #conv
+        out = self.conv1(latent)
+        out = self.conv2(out)
+        out = self.up_conv(out)
+
+        return out
