@@ -15,8 +15,10 @@ Final project for COGS 181 WI23. This project proposed a possible way to improve
  - [x] AdaIN layer
    - [x] Test (input-output shape)
    - [x] AdaIN
- - [ ] U-net Model
- - [ ] UAdaIN Model
+ - [x] U-net Model
+   - [ ] Trainer/Appilcation
+ - [x] UAdaIN Model
+   - [ ] Trainer/Application
  - [ ] Data pipeline
    - [ ] DataSet
    - [ ] DataLoader

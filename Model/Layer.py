@@ -9,8 +9,11 @@ No paddings will be applied to the input ---- all paddings should be done
 before feeding the network
 The input of this layer is assumed to have shape
     [batch, input_channel, height, width]
-The output of this layer has shape
-    [batch, output_channel, (height-4)/2, (width-4)/2]
+The output of this layer should contains two values:
+    output with shape:
+        [batch, output_channel, (height-4)/2, (width-4)/2]
+    skip connection with shape:
+        [batch, output_channel, (height-4), (width-4)]
 '''
 class Down(nn.Module):
     
@@ -49,11 +52,11 @@ class Down(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=(2,2))
 
     def forward(self, x):
-        out = self.conv1(x)
-        out = self.conv2(out)
-        out = self.maxpool(out)
+        skip = self.conv1(x)
+        skip = self.conv2(skip)
+        out = self.maxpool(skip)
 
-        return out
+        return out, skip
 
 
 '''
@@ -122,7 +125,7 @@ class Up(nn.Module):
     def forward(self, x):
         out = self.conv1(x)
         out = self.conv2(out)
-        if up_conv is not None:
+        if self.up_conv is not None:
             out = self.up_conv(out)
 
         return out
@@ -225,6 +228,69 @@ class AdaIN(nn.Module):
 
         #conv
         out = self.conv1(latent)
+        out = self.conv2(out)
+        out = self.up_conv(out)
+
+        return out
+
+'''
+A general layer for latent space.
+This layer does not contain AdaIN and is for pretrain use only
+By default they should have following relationship:
+    2*input_channel = intermediate_channel
+Unlike original U-net, in order to make sure the output and input have the same
+size (it's an auto-encoder), padings will be applied to all regular convolutional
+layers except for up-conv layer.
+It contains two Convolutional layers with kernel 3x3 and one up-conv layer
+with kernel 2x2.
+The input of this layer is assumed to have shape:
+    [batch, input_channel, height, width]
+The output of this layer has shape
+    [batch, input_channel, height*2, width*2]
+'''
+class BottleNeck(nn.Module):
+
+    def __init__(self, input_channel, intermediate_channel,\
+               has_bn=False):
+        super(BottleNeck, self).__init__()
+
+        #the first convolution layer
+        self.conv1 = nn.Sequential(
+                nn.Conv2d(in_channels = input_channel,\
+                          out_channels = intermediate_channel,\
+                          kernel_size = (3,3),\
+                          padding = 'same'),      
+                nn.ReLU()
+            )
+        if has_bn:
+            #apply batch normalization if needed
+            #by default there should not be one
+            self.conv1.add_module("batch_norm",
+                nn.BatchNorm2d(intermediate_channel))
+
+        #the second convolution layer
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels = intermediate_channel,\
+                      out_channels = intermediate_channel,\
+                      kernel_size = (3,3),\
+                      padding = 'same'),
+            nn.ReLU()
+        )
+        if has_bn:
+            #apply batch normalization if needed
+            #by default there should not be one
+            self.conv2.add_module("batch_norm",
+                nn.BatchNorm2d(intermediate_channel))
+
+        #up-conv
+        self.up_conv = nn.ConvTranspose2d(\
+                          in_channels = intermediate_channel,\
+                          out_channels = input_channel,\
+                          kernel_size = (2,2),\
+                          stride = 2) #output_channel=input_channel
+
+    def forward(self, x):
+        out = self.conv1(x)
         out = self.conv2(out)
         out = self.up_conv(out)
 
