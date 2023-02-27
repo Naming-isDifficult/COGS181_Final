@@ -80,9 +80,12 @@ class UAdaINModel(nn.Module):
                                          #the up-conv should be suppressed
 
         #final 1x1 conv to change the amount of channels
-        self.output = nn.Conv2d(in_channels = 64,\
-                                out_channels = 3,\
-                                kernel_size = (1,1))
+        self.output = nn.Sequential(
+                            nn.Conv2d(in_channels = 64,\
+                                      out_channels = 3,\
+                                      kernel_size = (1,1)),
+                            nn.ReLU()
+        )
 
     def skip_connections(self, down_feature, up_feature):
         #helper method for generating skip connections
