@@ -40,8 +40,7 @@ class ImageDataSet(data.Dataset):
         #return value should have shape:
         #   [channel, height, width]
         #and the ordering of channels is R G B
-        img = Image.open(os.path.join(self.source_folder,\
-                                      self.images[index]))
+        img = Image.open(self.images[index])
         img_tensor = self.transer(img)
         
         return img_tensor.to(self.device)
