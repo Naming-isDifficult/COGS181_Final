@@ -8,9 +8,9 @@ from torchvision import transforms
 A generator method to return only files
 '''
 def file_generator(path):
-    for file in os.listdir(path):
-        if os.path.isfile(os.path.join(path, file)):
-            yield file
+    for dir, _, files in os.walk(path):
+        for file in files:
+            yield os.path.join(dir, file)
 
 '''
 This class is created to represent a set of images.
@@ -25,7 +25,7 @@ class ImageDataSet(data.Dataset):
 
     def __init__(self, source_folder, device):
         #source_folder should be the path to the folder containing
-        #images, sub-directories will not be included
+        #images, sub-directories will also be included
         #device should be the device for tensors, every tensor returned
         #by this dataset will be allocated to that device
         super(ImageDataSet, self).__init__()

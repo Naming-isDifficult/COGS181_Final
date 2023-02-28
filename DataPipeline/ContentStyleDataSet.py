@@ -9,9 +9,9 @@ from torchvision import transforms
 A generator method to return only files
 '''
 def file_generator(path):
-    for file in os.listdir(path):
-        if os.path.isfile(os.path.join(path, file)):
-            yield file
+    for dir, _, files in os.walk(path):
+        for file in files:
+            yield os.path.join(dir, file)
 
 '''
 This class is created to represent a set of content and styles.
@@ -30,7 +30,7 @@ class ContentStyleDataSet(data.Dataset):
 
     def __init__(self, content_folder, style_folder, device):
         #source_folder should be the path to the folder containing
-        #images, sub-directories will not be included
+        #images, sub-directories will also be included
         #device should be the device for tensors, every tensor returned
         #by this dataset will be allocated to that device
         super(ContentStyleDataSet, self).__init__()
@@ -51,12 +51,10 @@ class ContentStyleDataSet(data.Dataset):
         #both of them should have shape:
         #   [channel, height, width]
         #and the ordering of channels is R G B
-        content = Image.open(os.path.join(self.content_folder,\
-                                      self.content_img[index]))
+        content = Image.open(self.content_img[index])
         content_tensor = self.transer(content)
 
-        style = Image.open(os.path.join(self.style_folder,\
-                                        random.choice(self.style_img)))
+        style = Image.open(random.choice(self.style_img))
         style_tensor = self.transer(style)
         
         return content_tensor.to(self.device),\
