@@ -158,7 +158,7 @@ Application class for U-net,
 '''
 class UNet:
     
-    def __init__(self, input_channel, device = None,\
+    def __init__(self, input_channel=3, device = None,\
                  dataset=None,batch_size = 4, lr = 0.001,\
                  has_bn=False, prev_weights=None):
         #initialize device if not specified
