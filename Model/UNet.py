@@ -225,6 +225,9 @@ class UNet:
             loader = DataLoader(dataset = self.dataset,\
                                 batch_size = self.batch_size,\
                                 shuffle = True)
+            avg_loss = []
+            avg_save_loss = []
+
             #training process
             for _, data in enumerate(loader):
                 #apply pre-pad
@@ -243,9 +246,14 @@ class UNet:
                 loss_.backward()
                 self.optimizer.step()
 
+                #save loss
+                avg_loss.append(loss_)
+                avg_save_loss.append(loss_)
+
                 #check save model
                 if not step%steps_to_save:
-                    self.save_model(model_dir, i, step, loss_)
+                    self.save_model(model_dir, i, step, sum(avg_save_loss)/len(avg_save_loss))
+                    avg_save_loss = []
 
                     #check model num
                     file_list = os.listdir(model_dir)
@@ -262,7 +270,7 @@ class UNet:
                 step = step + 1
 
             #save the model after epoch
-            self.save_model(model_dir, i, step, loss_)
+            self.save_model(model_dir, i, step, sum(avg_save_loss)/len(avg_save_loss))
 
             #check model num
             file_list = os.listdir(model_dir)
