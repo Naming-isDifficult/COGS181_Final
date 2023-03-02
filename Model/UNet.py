@@ -200,13 +200,21 @@ class UNet:
 
         return padding(input_), up, left
 
-    def save_model(self, model_dir, epoch, step, loss):
+    def save_model(self, model_dir, epoch, step, loss, maximum_model):
         #save weights
         model_name = 'unet_epoch{current_epoch}_step{current_step}_loss{current_loss}.weights'\
                                                     .format(current_epoch = epoch,\
                                                             current_step = step,\
                                                             current_loss = loss)
         torch.save(self.model.state_dict(), os.path.join(model_dir, model_name))
+
+        #check model num
+        file_list = os.listdir(model_dir)
+        if len(file_list) > maximum_model:
+            #remove previous epoch
+            file_list.sort(key=lambda x: os.path.getmtime(
+                                         os.path.join(model_dir, x)))
+            os.remove(os.path.join(model_dir, file_list[0]))
 
     def train(self, epoch=10, model_dir=None,\
               steps_to_save = 10, maximum_model=5):
@@ -252,16 +260,10 @@ class UNet:
 
                 #check save model
                 if not step%steps_to_save:
-                    self.save_model(model_dir, i, step, sum(avg_save_loss)/len(avg_save_loss))
+                    self.save_model(model_dir, i, step,\
+                                    sum(avg_save_loss)/len(avg_save_loss),\
+                                    maximum_model)
                     avg_save_loss = []
-
-                    #check model num
-                    file_list = os.listdir(model_dir)
-                    if len(file_list) > maximum_model:
-                        #remove previous epoch
-                        file_list.sort(key=lambda x: os.path.getmtime(
-                                                     os.path.join(model_dir, x)))
-                        os.remove(os.path.join(model_dir, file_list[0]))
 
                 #next step
                 print("Epoch: {e}, Step: {s}, Loss:{l}".format(e = i,\
@@ -270,15 +272,9 @@ class UNet:
                 step = step + 1
 
             #save the model after epoch
-            self.save_model(model_dir, i, step, sum(avg_save_loss)/len(avg_save_loss))
-
-            #check model num
-            file_list = os.listdir(model_dir)
-            if len(file_list) > maximum_model:
-                #remove previous epoch
-                file_list.sort(key=lambda x: os.path.getmtime(
-                                             os.path.join(model_dir, x)))
-                os.remove(os.path.join(model_dir, file_list[0]))
+            self.save_model(model_dir, i, step,\
+                            sum(avg_save_loss)/len(avg_save_loss),\
+                            maximum_model)
 
     def pred(self, input_):
         #make sure it contains batch
