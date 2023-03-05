@@ -189,8 +189,8 @@ class UNet:
         #before feeding the model, prepad the input so that it can
         #fulfil the requirements of the model
         
-        height_pad = 256 - input_.shape[2] % 256
-        width_pad = 256 - input_.shape[3] % 256
+        height_pad = 16 - input_.shape[2] % 16
+        width_pad = 16 - input_.shape[3] % 16
         up = height_pad // 2
         down = height_pad - up
         left = width_pad // 2
@@ -280,11 +280,21 @@ class UNet:
         #make sure it contains batch
         if len(input_.shape) != 4:
             input_ = torch.unsqueeze(input_, dim=0)
+
+        #prepading
+        height_ori = input_.shape[2]
+        width_ori = input_.shape[3]
+        padded_data, height_start, width_start = self.prepad(input_)
         
         #calculate result
         with torch.no_grad():
-            output = self.model(input_)
+            output = self.model(padded_data)
         
+        #crop the original size
+        output = output[:,:,\
+                        height_start:height_start+height_ori,\
+                        width_start:width_start+width_ori]
+
         #remove empty axis
         output = output.squeeze()
 

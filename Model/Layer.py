@@ -147,8 +147,12 @@ are assumed to have shape:
     [batch, input_channel, height, width]
 The tuple is assumed to be:
     (content_feature_map, style_feature_map)
+The output of this layer should be a tuple:
+    (layer_output, transformed_map)
 The output of this layer has shape
     [batch, input_channel, height*2, width*2]
+The transformed map has shape:
+    [batch, input_channel, height, width]
 '''
 class AdaIN(nn.Module):
 
@@ -231,7 +235,7 @@ class AdaIN(nn.Module):
         out = self.conv2(out)
         out = self.up_conv(out)
 
-        return out
+        return out, latent
 
 '''
 A general layer for latent space.

@@ -1,6 +1,7 @@
 from Model.Layer import Down, AdaIN, Up
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 '''
 The model. I name it UAdaIN, though I'm bad at naming.
@@ -9,15 +10,17 @@ The input is assumed to be a tuple:
 Both of them should have shape:
     [batch, channel, height, width]
 The output will be a tuple shown as below:
-    (output_image, input_img_feature_map, style_feature_maps)
+    (output_image, transformed_feature map, style_means, style_stds)
 The output_image should have shape:
     [batch, channel, height, width]
 The input_img_feature_map should have shape:
     [batch, 512, height/8, width/8]
-The style_feature_maps should be a list containing:
-    [style_feature_map1, style_feature_map2,
-     style_feature_map3, style_feature_map4,]
-Where each of them is the output of a down sampling layer
+The style_means should be a list containing:
+    [style_mean1, style_mean2, style_mean3, style_mean4]
+The style_stds should be a list containing:
+    [style_std1, style_std2, style_std3, style_std4]
+Where each of them (mean and std) should have shape:
+    [batch, channel]
 The model will automatically apply paddings.
 '''
 class UAdaINModel(nn.Module):
@@ -44,7 +47,8 @@ class UAdaINModel(nn.Module):
                           has_bn = has_bn)
         
         #AdaIN layer
-        self.adain = AdaIN(input_channel = 512,\
+        #Using the same name as the one in UNet to load pretrain weights
+        self.bottleneck = AdaIN(input_channel = 512,\
                            intermediate_channel = 1024,\
                            has_bn = has_bn)
 
@@ -82,10 +86,25 @@ class UAdaINModel(nn.Module):
         #final 1x1 conv to change the amount of channels
         self.output = nn.Sequential(
                             nn.Conv2d(in_channels = 64,\
-                                      out_channels = 3,\
+                                      out_channels = input_channel,\
                                       kernel_size = (1,1)),
                             nn.ReLU()
         )
+
+    def freeze_encoder(self):
+        #freeze the encoder part
+        self.down1.requires_grad_(requires_grad=False)
+        self.down2.requires_grad_(requires_grad=False)
+        self.down3.requires_grad_(requires_grad=False)
+        self.down4.requires_grad_(requires_grad=False)
+
+    def calc_mean_and_std(self, x):
+        #helper method to calculate instance mean and standard deviation
+        #assuming x.shape = [batch, channel, height, width]
+        #output should be a tuple: (mean, std)
+        #both should have shape [batch, channel]
+        return torch.mean(x, dim=[2,3]),\
+               torch.std(x, unbiased = False, dim=[2,3])
 
     def skip_connections(self, down_feature, up_feature):
         #helper method for generating skip connections
@@ -125,12 +144,21 @@ class UAdaINModel(nn.Module):
         #this method is used for computing content loss
 
         x = self.pad(x)
-        map1,_ = self.down1(x)
-        map2,_ = self.down2(map1)
-        map3,_ = self.down3(map2)
-        map4,_ = self.down4(map3)
 
-        return map4, [map1, map2, map3, map4]
+        map,_ = self.down1(x)
+        map_mean1, map_std1 = self.calc_mean_and_std(map)
+
+        map,_ = self.down2(map)
+        map_mean2, map_std2 = self.calc_mean_and_std(map)
+
+        map,_ = self.down3(map)
+        map_mean3, map_std3 = self.calc_mean_and_std(map)
+
+        map,_ = self.down4(map)
+        map_mean4, map_std4 = self.calc_mean_and_std(map)
+
+        return [map_mean1, map_mean2, map_mean3, map_mean4],\
+               [map_std1, map_std2, map_std3, map_std4]
 
     def forward(self, x):
         #extract content and style
@@ -147,13 +175,20 @@ class UAdaINModel(nn.Module):
         content_feature_map, sc4 = self.down4(content_feature_map)
 
         #extract feature map of content
-        style_feature_map1,_ = self.down1(style)
-        style_feature_map2,_ = self.down2(style_feature_map1)
-        style_feature_map3,_ = self.down3(style_feature_map2)
-        style_feature_map4,_ = self.down4(style_feature_map3)
+        style_feature_map,_ = self.down1(style)
+        style_mean1, style_std1 = self.calc_mean_and_std(style_feature_map)
+
+        style_feature_map,_ = self.down2(style_feature_map)
+        style_mean2, style_std2 = self.calc_mean_and_std(style_feature_map)
+
+        style_feature_map,_ = self.down3(style_feature_map)
+        style_mean3, style_std3 = self.calc_mean_and_std(style_feature_map)
+
+        style_feature_map,_ = self.down4(style_feature_map)
+        style_mean4, style_std4 = self.calc_mean_and_std(style_feature_map)
 
         #adain
-        latent = self.adain((content_feature_map, style_feature_map4))
+        latent, transformed_map = self.bottleneck((content_feature_map, style_feature_map))
 
         #upsampling with skip-connections
         latent = self.skip_connections(down_feature = sc4,\
@@ -172,6 +207,6 @@ class UAdaINModel(nn.Module):
         #output
         out = self.output(latent)
 
-        return out, content_feature_map,\
-               [style_feature_map1, style_feature_map2,\
-                style_feature_map3, style_feature_map4]
+        return out, transformed_map,\
+               [style_mean1, style_mean2, style_mean3, style_mean4],\
+               [style_std1, style_std2, style_std3, style_std4]
