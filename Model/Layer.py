@@ -205,7 +205,7 @@ class AdaIN(nn.Module):
     #assuming x.shape = [batch, channel, height, width]
     #output should have shape [batch, channel, 1, 1]
     def calc_std(self, x):
-        return torch.std(x, unbiased = False, dim=[2,3], keepdim=True) + 1e-5
+        return torch.std(x, unbiased = False, dim=[2,3], keepdim=True) + 1e-6
                 #add an extremely small value to avoid nan
 
     #helper method to perform AdaIN on input

@@ -103,10 +103,11 @@ class UAdaINModel(nn.Module):
         #assuming x.shape = [batch, channel, height, width]
         #output should be a tuple: (mean, std)
         #both should have shape [batch, channel]
-        return torch.mean(x, dim=[2,3]),\
-               torch.std(x, unbiased = False, dim=[2,3])
+        return torch.mean(x, dim=[2,3], keepdim=True),\
+               torch.std(x, unbiased = False, dim=[2,3], keepdim=True)+1e-6
 
-    def skip_connections(self, down_feature, up_feature):
+    def skip_connections(self, down_feature, up_feature,\
+                         style_mean, style_std):
         #helper method for generating skip connections
         #the input of down_feature should be from contracting path with shape:
         #    [batch, channel, down_height, down_width]
@@ -128,10 +129,18 @@ class UAdaINModel(nn.Module):
         height_start_index = (down_height-up_height)//2
         width_start_index = (down_width-up_width)//2
 
+        #calc original mean and std
+        down_mean, down_std = self.calc_mean_and_std(down_feature)
+
         #crop down_feature
         sc = down_feature[:,:,\
                           height_start_index : height_start_index+up_height,\
                           width_start_index : width_start_index+up_width]
+        print(sc.shape)
+
+        #adain
+        sc = style_std * (sc-down_mean)/down_std + style_mean
+        print(sc.shape)
         
         #concat feature
         re = torch.concat((sc,up_feature), dim=1)
@@ -192,16 +201,24 @@ class UAdaINModel(nn.Module):
 
         #upsampling with skip-connections
         latent = self.skip_connections(down_feature = sc4,\
-                                       up_feature = latent)
+                                       up_feature = latent,\
+                                       style_mean = style_mean4,\
+                                       style_std = style_std4)
         latent = self.up1(latent)
         latent = self.skip_connections(down_feature = sc3,\
-                                       up_feature = latent)
+                                       up_feature = latent,\
+                                       style_mean = style_mean3,\
+                                       style_std = style_std3)
         latent = self.up2(latent)
         latent = self.skip_connections(down_feature = sc2,\
-                                       up_feature = latent)
+                                       up_feature = latent,\
+                                       style_mean = style_mean2,\
+                                       style_std = style_std2)
         latent = self.up3(latent)
         latent = self.skip_connections(down_feature = sc1,\
-                                       up_feature = latent)
+                                       up_feature = latent,\
+                                       style_mean = style_mean1,\
+                                       style_std = style_std1)
         latent = self.up4(latent)
 
         #output
