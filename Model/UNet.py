@@ -117,6 +117,18 @@ class UNetModel(nn.Module):
 
         return re
 
+    def kaiming_init_helper(self, x):
+        #initialize weights with kaiming's method
+        if isinstance(x, nn.Conv2d):
+            nn.init.kaiming_uniform_(x.weight, nonlinearity='relu')
+            x.bias.data.fill_(0)
+        elif isinstance(x, nn.ConvTranspose2d):
+            nn.init.kaiming_uniform_(x.weight, nonlinearity='relu')
+            x.bias.data.fill_(0)
+
+    def kaiming_init(self):
+        self.apply(kaiming_init_helper)
+
     def forward(self, x):
         #copy and paste from UAdaIN
         content = x
@@ -173,6 +185,8 @@ class UNet:
         if(prev_weights is not None):
             weights = torch.load(prev_weights)
             self.model.load_state_dict(weights)
+        else:
+            self.model.kaiming_init()
         self.model.to(self.device)
 
         #initialize loss func and optimizer
