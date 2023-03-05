@@ -141,10 +141,10 @@ class UNetModel(nn.Module):
         latent = self.skip_connections(down_feature = sc3,\
                                        up_feature = latent)
         latent = self.up2(latent)
-        latent = self.skip_connections(down_feature = sc2,\
+        latent = self.skip_connections(down_feature = latent,\
                                        up_feature = latent)
         latent = self.up3(latent)
-        latent = self.skip_connections(down_feature = sc1,\
+        latent = self.skip_connections(down_feature = latent,\
                                        up_feature = latent)
         latent = self.up4(latent)
 
