@@ -25,8 +25,10 @@ The model will automatically apply paddings.
 '''
 class UAdaINModel(nn.Module):
 
-    def __init__(self, input_channel, has_bn=False):
+    def __init__(self, input_channel, has_bn=False, sc_adain=True):
         super(UAdaINModel, self).__init__()
+        self.has_bn = has_bn
+        self.sc_adain = sc_adain
 
         #padding layer
         self.pad = nn.ReflectionPad2d(30)
@@ -136,11 +138,10 @@ class UAdaINModel(nn.Module):
         sc = down_feature[:,:,\
                           height_start_index : height_start_index+up_height,\
                           width_start_index : width_start_index+up_width]
-        print(sc.shape)
 
         #adain
-        sc = style_std * (sc-down_mean)/down_std + style_mean
-        print(sc.shape)
+        if self.sc_adain:
+            sc = style_std * (sc-down_mean)/down_std + style_mean
         
         #concat feature
         re = torch.concat((sc,up_feature), dim=1)
@@ -166,7 +167,8 @@ class UAdaINModel(nn.Module):
         map,_ = self.down4(map)
         map_mean4, map_std4 = self.calc_mean_and_std(map)
 
-        return [map_mean1, map_mean2, map_mean3, map_mean4],\
+        return map,\
+               [map_mean1, map_mean2, map_mean3, map_mean4],\
                [map_std1, map_std2, map_std3, map_std4]
 
     def forward(self, x):
@@ -227,3 +229,205 @@ class UAdaINModel(nn.Module):
         return out, transformed_map,\
                [style_mean1, style_mean2, style_mean3, style_mean4],\
                [style_std1, style_std2, style_std3, style_std4]
+
+'''
+Loss function for UAdaIN
+'''
+class UAdaINLoss(nn.Module):
+    def __init__(self, alpha=0.3):
+        super(UAdaINLoss, self).__init__()
+        self.mse = F.mse_loss
+        self.alpha = alpha
+    
+    def forward(self, x):
+        #expecting x to be a tuple containing:
+        #   (out_map, transformed_map, out_means, style_means, out_stds, style_stds)
+        out_map, transformed_map, out_means, style_means, out_stds, style_stds = x
+        content_loss = self.mse(out_map, transformed_map)
+
+        style_loss = 0
+        for i in range(len(out_means)):
+            #compute mean loss
+            mean_loss = self.mse(out_means[i], style_means[i])
+            #compute std means
+            std_loss = self.mse(out_stds[i], style_stds[i])
+            #addup
+            total_loss = mean_loss + std_loss
+            style_loss = style_loss + total_loss
+
+        return content_loss + self.alpha * style_loss
+
+'''
+Application class for UAdaIN,
+'''
+class UAdaIN:
+    
+    def __init__(self, input_channel=3, device = None,\
+                 dataset=None,batch_size = 4, lr = 0.001,\
+                 has_bn=False, sc_adain=True, prev_weights=None):
+        #initialize device if not specified
+        self.device = device
+        if not self.device:
+            self.device = torch.device("cuda" if torch.cuda.is_available()\
+                                       else "cpu")
+
+        #initialize model
+        self.model = UAdaINModel(input_channel = input_channel,\
+                               has_bn = has_bn, sc_adain = sc_adain)
+        if(prev_weights is not None):
+            weights = torch.load(prev_weights)
+            self.model.load_state_dict(weights)
+        else:
+            #load vgg-13 weights
+        self.model.to(self.device)
+        self.model.freeze_encoder()
+
+        #initialize loss func and optimizer
+        self.loss = UAdaINLoss(alpha=0.5)
+        self.loss.to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        
+        #initialize dataset, loader will be initilized at the
+        #beginning at each epoch to ensure shuffling
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+    def prepad(self, input_):
+        #before feeding the model, prepad the input so that it can
+        #fulfil the requirements of the model
+        
+        height_pad = 16 - input_.shape[2] % 16
+        width_pad = 16 - input_.shape[3] % 16
+        up = height_pad // 2
+        down = height_pad - up
+        left = width_pad // 2
+        right = width_pad - left
+        
+        padding = nn.ReflectionPad2d((left, right, up, down))
+
+        return padding(input_), up, left
+
+    def save_model(self, model_dir, epoch, step, loss, maximum_model):
+        #save weights
+        model_name = 'uadain_epoch{current_epoch}_step{current_step}_loss{current_loss}.weights'\
+                                                    .format(current_epoch = epoch,\
+                                                            current_step = step,\
+                                                            current_loss = loss)
+        torch.save(self.model.state_dict(), os.path.join(model_dir, model_name))
+
+        #check model num
+        file_list = os.listdir(model_dir)
+        if len(file_list) > maximum_model:
+            #remove previous epoch
+            file_list.sort(key=lambda x: os.path.getmtime(
+                                         os.path.join(model_dir, x)))
+            os.remove(os.path.join(model_dir, file_list[0]))
+
+    def train(self, epoch=10, model_dir=None,\
+              steps_to_save = 10, maximum_model=5,\
+              display_every = -1):
+        
+        #initialize model_dir if not specified
+        if not model_dir:
+            current_time = datetime.datetime.now()
+            current_time = current_time.strftime('%Y-%m-%d')
+            model_dir = 'SavedModel/UAdaIN_Model_{date}'.format(date=current_time)
+        if not os.path.isdir(model_dir):
+            os.makedirs(model_dir)
+
+        for i in range(epoch):
+            #initialize step and dataloader
+            step = 0
+            loader = DataLoader(dataset = self.dataset,\
+                                batch_size = self.batch_size,\
+                                shuffle = True)
+            avg_loss = []
+            avg_save_loss = []
+
+            #training process
+            for _, data in enumerate(loader):
+                content, style = data
+
+                #apply pre-pad
+                height_ori = content.shape[2]
+                width_ori = content.shape[3]
+                padded_content, height_start, width_start = self.prepad(content)
+                padded_style, _, _ = self.prepad(style)
+
+                #train one step
+                self.optimizer.zero_grad()
+                output = self.model((padded_content, padded_style))
+
+                #unpack output
+                out_img, transformed_map, style_means, style_stds = output
+
+                #calculate new featuremap
+                out_map, out_means, out_stds = self.model.get_encoded_feature(out_img)
+                
+                loss_ = self.loss((out_map, transformed_map,\
+                                   out_means, style_means,\
+                                   out_stds, style_stds))
+                loss_.backward()
+                self.optimizer.step()
+
+                #save loss
+                avg_loss.append(loss_.detach())
+                avg_save_loss.append(loss_.detach())
+
+                #check save model
+                if not (step%steps_to_save and step):
+                    self.save_model(model_dir, i, step,\
+                                    sum(avg_save_loss)/len(avg_save_loss),\
+                                    maximum_model)
+                    avg_save_loss = []
+
+                #clear cache
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                #next step
+                print("Epoch: {e}, Step: {s}, Loss:{l}".format(e = i,\
+                                                               s = step,\
+                                                               l = loss_))
+                step = step + 1
+
+            #save the model after epoch
+            self.save_model(model_dir, i, step,\
+                            sum(avg_loss)/len(avg_loss),\
+                            maximum_model)
+
+    def pred(self, content, style):
+        #make sure it contains batch
+        if len(content.shape) != 4:
+            content = torch.unsqueeze(content, dim=0)
+        if len(style.shape) != 4:
+            style = torch.unsqueeze(style, dim=0)
+
+        #prepading
+        height_ori = content.shape[2]
+        width_ori = content.shape[3]
+        padded_content, height_start, width_start = self.prepad(content)
+        padded_style, _, _ = self.prepad(style)
+        
+        #calculate result
+        with torch.no_grad():
+            output = self.model((padded_content, padded_style))[0]
+
+        #crop the original size
+        output = output[:,:,\
+                        height_start:height_start+height_ori,\
+                        width_start:width_start+width_ori]
+
+        #remove empty axis
+        output = output.squeeze()
+
+        #make sure it's on cpu
+        output = output.cpu()
+
+        #permute [C, H, W] -> [H, W, C]
+        output = output.permute((1,2,0))
+
+        #clamp result -> [0,1] (0 is actually guaranteed by relu)
+        output = torch.clamp(output, min=0.0, max=1.0)
+        
+        return output.numpy()
