@@ -1,7 +1,11 @@
 from Model.Layer import Down, AdaIN, Up
 import torch
+from  torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
+import matplotlib.pyplot as plt
+import datetime, os
 
 '''
 The model. I name it UAdaIN, though I'm bad at naming.
@@ -31,10 +35,11 @@ class UAdaINModel(nn.Module):
         self.sc_adain = sc_adain
 
         #padding layer
-        self.pad = nn.ReflectionPad2d(30)
+        self.pad = nn.ReflectionPad2d(62)
 
         #in order to make it easier to get feature map
         #contracting path won't be packed in a Sequential model
+        #this is the same as vgg-13
         self.down1 = Down(input_channel = input_channel,\
                           output_channel = 64,\
                           has_bn = has_bn)
@@ -47,6 +52,9 @@ class UAdaINModel(nn.Module):
         self.down4 = Down(input_channel = 256,\
                           output_channel = 512,\
                           has_bn = has_bn)
+        self.down5 = Down(input_channel = 512,\
+                          output_channel = 512,\
+                          has_bn = has_bn)
         
         #AdaIN layer
         #Using the same name as the one in UNet to load pretrain weights
@@ -56,26 +64,33 @@ class UAdaINModel(nn.Module):
 
         #in order to get skip connections
         #expanding path won't be packed in a Sequential model
+        #this is a mirror of vgg-13
         self.up1 = Up(input_channel = 1024,\
                       intermediate_channel = 512,\
-                      output_channel = 256,\
+                      output_channel = 512,\
                       has_bn = has_bn) #input should be the output of
                                        #previous layer + skip connection
                                        #so the amount of channels should
                                        #be doubled
-        self.up2 = Up(input_channel = 512,\
+        self.up2 = Up(input_channel = 1024,\
+                      intermediate_channel = 512,\
+                      output_channel = 256,\
+                      has_bn = has_bn) #as stated above, the input_channel
+                                       #should be twice as the output_channel
+                                       #of previous layer
+        self.up3 = Up(input_channel = 512,\
                       intermediate_channel = 256,\
                       output_channel = 128,\
                       has_bn = has_bn) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
-        self.up3 = Up(input_channel = 256,\
+        self.up4 = Up(input_channel = 256,\
                       intermediate_channel = 128,\
                       output_channel = 64,\
                       has_bn = has_bn) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
-        self.up4 = Up(input_channel = 128,\
+        self.up5 = Up(input_channel = 128,\
                       intermediate_channel = 64,\
                       output_channel = 64,\
                       has_bn = has_bn,\
@@ -99,6 +114,19 @@ class UAdaINModel(nn.Module):
         self.down2.requires_grad_(requires_grad=False)
         self.down3.requires_grad_(requires_grad=False)
         self.down4.requires_grad_(requires_grad=False)
+        self.down5.requires_grad_(requires_grad=False)
+
+    def load_vgg_weights(self):
+        #load vgg weights to contracting path
+        vgg = torchvision.models.vgg13_bn(weights='DEFAULT') if self.has_bn\
+            else torchvision.models.vgg13(weights='DEFAULT')
+
+        #copy and paste weights
+        for uadain_param, vgg_param in zip(self.named_parameters(),\
+                                       vgg.features.named_parameters()):
+            with torch.no_grad():
+                uadain_param[1].requires_grad_(requires_grad=False)
+                uadain_param[1].copy_(vgg_param[1])
 
     def calc_mean_and_std(self, x):
         #helper method to calculate instance mean and standard deviation
@@ -167,9 +195,12 @@ class UAdaINModel(nn.Module):
         map,_ = self.down4(map)
         map_mean4, map_std4 = self.calc_mean_and_std(map)
 
+        map,_ = self.down5(map)
+        map_mean5, map_std5 = self.calc_mean_and_std(map)
+
         return map,\
-               [map_mean1, map_mean2, map_mean3, map_mean4],\
-               [map_std1, map_std2, map_std3, map_std4]
+               [map_mean1, map_mean2, map_mean3, map_mean4, map_mean5],\
+               [map_std1, map_std2, map_std3, map_std4, map_std5]
 
     def forward(self, x):
         #extract content and style
@@ -184,6 +215,7 @@ class UAdaINModel(nn.Module):
         content_feature_map, sc2 = self.down2(content_feature_map)
         content_feature_map, sc3 = self.down3(content_feature_map)
         content_feature_map, sc4 = self.down4(content_feature_map)
+        content_feature_map, sc5 = self.down5(content_feature_map)
 
         #extract feature map of content
         style_feature_map,_ = self.down1(style)
@@ -198,37 +230,45 @@ class UAdaINModel(nn.Module):
         style_feature_map,_ = self.down4(style_feature_map)
         style_mean4, style_std4 = self.calc_mean_and_std(style_feature_map)
 
+        style_feature_map,_ = self.down5(style_feature_map)
+        style_mean5, style_std5 = self.calc_mean_and_std(style_feature_map)
+
         #adain
         latent, transformed_map = self.bottleneck((content_feature_map, style_feature_map))
 
         #upsampling with skip-connections
+        latent = self.skip_connections(down_feature = sc5,\
+                                       up_feature = latent,\
+                                       style_mean = style_mean5,\
+                                       style_std = style_std5)
+        latent = self.up1(latent)
         latent = self.skip_connections(down_feature = sc4,\
                                        up_feature = latent,\
                                        style_mean = style_mean4,\
                                        style_std = style_std4)
-        latent = self.up1(latent)
+        latent = self.up2(latent)
         latent = self.skip_connections(down_feature = sc3,\
                                        up_feature = latent,\
                                        style_mean = style_mean3,\
                                        style_std = style_std3)
-        latent = self.up2(latent)
+        latent = self.up3(latent)
         latent = self.skip_connections(down_feature = sc2,\
                                        up_feature = latent,\
                                        style_mean = style_mean2,\
                                        style_std = style_std2)
-        latent = self.up3(latent)
+        latent = self.up4(latent)
         latent = self.skip_connections(down_feature = sc1,\
                                        up_feature = latent,\
                                        style_mean = style_mean1,\
                                        style_std = style_std1)
-        latent = self.up4(latent)
+        latent = self.up5(latent)
 
         #output
         out = self.output(latent)
 
         return out, transformed_map,\
-               [style_mean1, style_mean2, style_mean3, style_mean4],\
-               [style_std1, style_std2, style_std3, style_std4]
+               [style_mean1, style_mean2, style_mean3, style_mean4, style_mean5],\
+               [style_std1, style_std2, style_std3, style_std4, style_std5]
 
 '''
 Loss function for UAdaIN
@@ -263,13 +303,15 @@ Application class for UAdaIN,
 class UAdaIN:
     
     def __init__(self, input_channel=3, device = None,\
-                 dataset=None,batch_size = 4, lr = 0.001,\
-                 has_bn=False, sc_adain=True, prev_weights=None):
+                 dataset = None,batch_size = 4, lr = 0.001,\
+                 has_bn = False, sc_adain = True, prev_weights = None,\
+                 alpha = 0.5, pretrain = False):
         #initialize device if not specified
         self.device = device
         if not self.device:
             self.device = torch.device("cuda" if torch.cuda.is_available()\
                                        else "cpu")
+        self.pretrain = pretrain
 
         #initialize model
         self.model = UAdaINModel(input_channel = input_channel,\
@@ -278,12 +320,17 @@ class UAdaIN:
             weights = torch.load(prev_weights)
             self.model.load_state_dict(weights)
         else:
-            #load vgg-13 weights
+            if input_channel == 3:
+                self.model.load_vgg_weights()
+            else:
+                print('Using default weights is not encouraged,'+\
+                      ' please pretrain your own network first.')
         self.model.to(self.device)
         self.model.freeze_encoder()
 
         #initialize loss func and optimizer
-        self.loss = UAdaINLoss(alpha=0.5)
+        self.loss = nn.MSELoss() if pretrain\
+                    else UAdaINLoss(alpha)
         self.loss.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         
@@ -296,8 +343,8 @@ class UAdaIN:
         #before feeding the model, prepad the input so that it can
         #fulfil the requirements of the model
         
-        height_pad = 16 - input_.shape[2] % 16
-        width_pad = 16 - input_.shape[3] % 16
+        height_pad = 32 - input_.shape[2] % 32
+        width_pad = 32 - input_.shape[3] % 32
         up = height_pad // 2
         down = height_pad - up
         left = width_pad // 2
@@ -325,7 +372,7 @@ class UAdaIN:
 
     def train(self, epoch=10, model_dir=None,\
               steps_to_save = 10, maximum_model=5,\
-              display_every = -1):
+              display = True):
         
         #initialize model_dir if not specified
         if not model_dir:
@@ -347,6 +394,8 @@ class UAdaIN:
             #training process
             for _, data in enumerate(loader):
                 content, style = data
+                if self.pretrain:
+                    style = content
 
                 #apply pre-pad
                 height_ori = content.shape[2]
@@ -361,12 +410,18 @@ class UAdaIN:
                 #unpack output
                 out_img, transformed_map, style_means, style_stds = output
 
-                #calculate new featuremap
-                out_map, out_means, out_stds = self.model.get_encoded_feature(out_img)
-                
-                loss_ = self.loss((out_map, transformed_map,\
-                                   out_means, style_means,\
-                                   out_stds, style_stds))
+                #calculate loss
+                if self.pretrain:
+                    out_img = out_img[:,:,\
+                                      height_start:height_start+height_ori,\
+                                      width_start:width_start+width_ori]
+                    loss_ = self.loss(out_img, content)
+                else:
+                    #calculate new featuremap
+                    out_map, out_means, out_stds = self.model.get_encoded_feature(out_img)
+                    loss_ = self.loss((out_map, transformed_map,\
+                                       out_means, style_means,\
+                                       out_stds, style_stds))
                 loss_.backward()
                 self.optimizer.step()
 
@@ -395,6 +450,12 @@ class UAdaIN:
             self.save_model(model_dir, i, step,\
                             sum(avg_loss)/len(avg_loss),\
                             maximum_model)
+            
+            #show the result
+            if display:
+                out_img = out_img.detach().cpu().squeeze().permute((1,2,0)).numpy()
+                plt.imshow(out_img)
+                plt.show()
 
     def pred(self, content, style):
         #make sure it contains batch
