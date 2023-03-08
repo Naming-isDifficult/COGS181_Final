@@ -1,6 +1,27 @@
 import torch
 import torch.nn as nn
 
+def get_conv_module(input_channel, output_channel, has_bn=False):
+    if has_bn:
+        return nn.Sequential(
+            nn.Conv2d(in_channels = input_channel,\
+                      out_channels = output_channel,\
+                      kernel_size = (3,3),\
+                      padding = 'same',\
+                      padding_mode = 'reflect'),    
+            nn.ReLU(),
+            nn.BatchNorm2d(out_channel)
+        )
+    else:
+        return nn.Sequential(
+            nn.Conv2d(in_channels = input_channel,\
+                      out_channels = output_channel,\
+                      kernel_size = (3,3),\
+                      padding = 'same',\
+                      padding_mode = 'reflect'),    
+            nn.ReLU()
+        )
+
 '''
 A general layer for contracting path of the U-net
 It contains two Convolutional layers with kernel 3x3 and one max-pooling
@@ -17,44 +38,31 @@ The output of this layer should contains two values:
 '''
 class Down(nn.Module):
     
-    def __init__(self, input_channel, output_channel, has_bn=False):
+    def __init__(self, input_channel, output_channel,\
+                 num_layers = 2, has_bn = False):
         super(Down, self).__init__()
 
-        #the first convolution layer
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels = input_channel,\
-                      out_channels = output_channel,\
-                      kernel_size = (3,3),\
-                      padding = 'valid'),    
-            nn.ReLU()
-        )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv1.add_module("batch_norm",
-                nn.BatchNorm2d(output_channel))
-
-        #the second convolution layer
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels = output_channel,\
-                      out_channels = output_channel,\
-                      kernel_size = (3,3),\
-                      padding = 'valid'),    
-            nn.ReLU()
-        )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv2.add_module("batch_norm",
-                nn.BatchNorm2d(output_channel))
+        #initialize convolutional layers
+        self.conv_layers = nn.ModuleList()
+        self.conv_layers.append(get_conv_module(input_channel, output_channel,\
+                                                has_bn)) #input layer
+        for i in range(num_layers-1):
+            self.conv_layers.append(get_conv_module(output_channel,\
+                                                    output_channel,\
+                                                    has_bn)) #intermediate layer
 
         #pooling
         self.maxpool = nn.MaxPool2d(kernel_size=(2,2))
 
     def forward(self, x):
-        skip = self.conv1(x)
-        skip = self.conv2(skip)
-        out = self.maxpool(skip)
+        #using the output of first relu as skip
+        skip = self.conv_layers[0](x)
+        
+        #compute output
+        out = x
+        for layer in self.conv_layers:
+            out = layer(out)
+        out = self.maxpool(out)
 
         return out, skip
 
@@ -82,51 +90,37 @@ class Up(nn.Module):
     def __init__(self, input_channel,\
                  intermediate_channel,\
                  output_channel,\
-                 has_bn=False, last_layer=False):
+                 num_layers=2, has_bn=False,\
+                 last_layer=False):
         super(Up, self).__init__()
 
-        #the first convolution layer
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels = input_channel,\
-                      out_channels = intermediate_channel,\
-                      kernel_size = (3,3),\
-                      padding = 'same'),
-            nn.ReLU()
-        )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv1.add_module("batch_norm",
-                nn.BatchNorm2d(intermediate_channel))
-
-        #the second convolution layer
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels = intermediate_channel,\
-                      out_channels = intermediate_channel,\
-                      kernel_size = (3,3),\
-                      padding = 'same'),
-            nn.ReLU()
-        )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv2.add_module("batch_norm",
-                nn.BatchNorm2d(intermediate_channel))
+        #initialize convolutional layers
+        self.conv_layers = nn.ModuleList()
+        self.conv_layers.append(get_conv_module(input_channel,\
+                                                intermediate_channel,\
+                                                has_bn)) #input layer
+        for i in range(num_layers-1):
+            #output of second last layer should be determined later
+            self.conv_layers.append(get_conv_module(intermediate_channel,\
+                                                    intermediate_channel,\
+                                                    has_bn)) #intermediate layer
 
         #up-conv
-        self.up_conv = None
+        self.up = None
         if not last_layer:
-            self.up_conv = nn.ConvTranspose2d(\
-                              in_channels = intermediate_channel,\
-                              out_channels = output_channel,\
-                              kernel_size = (2,2),\
-                              stride = 2)
+            self.up = nn.ConvTranspose2d(\
+                          in_channels = intermediate_channel,\
+                          out_channels = output_channel,\
+                          kernel_size = (2,2),\
+                          stride = 2)
 
     def forward(self, x):
-        out = self.conv1(x)
-        out = self.conv2(out)
-        if self.up_conv is not None:
-            out = self.up_conv(out)
+        out = x
+        for layer in self.conv_layers:
+            out = layer(out)
+
+        if self.up is not None:
+            out = self.up(out)
 
         return out
 
@@ -161,32 +155,14 @@ class AdaIN(nn.Module):
         super(AdaIN, self).__init__()
 
         #the first convolution layer
-        self.conv1 = nn.Sequential(
-                nn.Conv2d(in_channels = input_channel,\
-                          out_channels = intermediate_channel,\
-                          kernel_size = (3,3),\
-                          padding = 'same'),      
-                nn.ReLU()
-            )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv1.add_module("batch_norm",
-                nn.BatchNorm2d(intermediate_channel))
+        self.conv1 = get_conv_module(input_channel,\
+                                     intermediate_channel,\
+                                     has_bn)
 
         #the second convolution layer
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels = intermediate_channel,\
-                      out_channels = intermediate_channel,\
-                      kernel_size = (3,3),\
-                      padding = 'same'),
-            nn.ReLU()
-        )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv2.add_module("batch_norm",
-                nn.BatchNorm2d(intermediate_channel))
+        self.conv2 = get_conv_module(intermediate_channel,\
+                                     intermediate_channel,\
+                                     has_bn)
 
         #up-conv
         self.up_conv = nn.ConvTranspose2d(\
@@ -207,6 +183,10 @@ class AdaIN(nn.Module):
     def calc_std(self, x):
         return torch.std(x, unbiased = False, dim=[2,3], keepdim=True) + 1e-6
                 #add an extremely small value to avoid nan
+    
+    #freeze encoder (conv_1 should be the last layer of encoder)
+    def freeze_encoder(self):
+        self.conv1.requires_grad_(requires_grad=False)
 
     #helper method to perform AdaIN on input
     #assuming content.shape = style.shape = [batch, channel, height, width]
@@ -226,76 +206,16 @@ class AdaIN(nn.Module):
     def forward(self, x):
         #unpack x
         content, style = x
+        
+        #last layer of encoder
+        content = self.conv1(content)
+        style = self.conv1(style)
 
         #adain
         latent = self.adain(content, style)
 
         #conv
-        out = self.conv1(latent)
-        out = self.conv2(out)
+        out = self.conv2(latent)
         out = self.up_conv(out)
 
         return out, latent
-
-'''
-A general layer for latent space.
-This layer does not contain AdaIN and is for pretrain use only
-By default they should have following relationship:
-    2*input_channel = intermediate_channel
-Unlike original U-net, in order to make sure the output and input have the same
-size (it's an auto-encoder), padings will be applied to all regular convolutional
-layers except for up-conv layer.
-It contains two Convolutional layers with kernel 3x3 and one up-conv layer
-with kernel 2x2.
-The input of this layer is assumed to have shape:
-    [batch, input_channel, height, width]
-The output of this layer has shape
-    [batch, input_channel, height*2, width*2]
-'''
-class BottleNeck(nn.Module):
-
-    def __init__(self, input_channel, intermediate_channel,\
-               has_bn=False):
-        super(BottleNeck, self).__init__()
-
-        #the first convolution layer
-        self.conv1 = nn.Sequential(
-                nn.Conv2d(in_channels = input_channel,\
-                          out_channels = intermediate_channel,\
-                          kernel_size = (3,3),\
-                          padding = 'same'),      
-                nn.ReLU()
-            )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv1.add_module("batch_norm",
-                nn.BatchNorm2d(intermediate_channel))
-
-        #the second convolution layer
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels = intermediate_channel,\
-                      out_channels = intermediate_channel,\
-                      kernel_size = (3,3),\
-                      padding = 'same'),
-            nn.ReLU()
-        )
-        if has_bn:
-            #apply batch normalization if needed
-            #by default there should not be one
-            self.conv2.add_module("batch_norm",
-                nn.BatchNorm2d(intermediate_channel))
-
-        #up-conv
-        self.up_conv = nn.ConvTranspose2d(\
-                          in_channels = intermediate_channel,\
-                          out_channels = input_channel,\
-                          kernel_size = (2,2),\
-                          stride = 2) #output_channel=input_channel
-
-    def forward(self, x):
-        out = self.conv1(x)
-        out = self.conv2(out)
-        out = self.up_conv(out)
-
-        return out

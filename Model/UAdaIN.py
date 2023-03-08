@@ -29,68 +29,60 @@ The model will automatically apply paddings.
 '''
 class UAdaINModel(nn.Module):
 
-    def __init__(self, input_channel, has_bn=False, sc_adain=True):
+    def __init__(self, input_channel, has_bn=False, num_sc=3, sc_adain=True):
         super(UAdaINModel, self).__init__()
         self.has_bn = has_bn
         self.sc_adain = sc_adain
-
-        #padding layer
-        self.pad = nn.ReflectionPad2d(62)
+        self.num_sc = num_sc
 
         #in order to make it easier to get feature map
         #contracting path won't be packed in a Sequential model
         #this is the same as vgg-13
         self.down1 = Down(input_channel = input_channel,\
                           output_channel = 64,\
+                          num_layers = 2,\
                           has_bn = has_bn)
         self.down2 = Down(input_channel = 64,\
                           output_channel = 128,\
+                          num_layers = 2,\
                           has_bn = has_bn)
         self.down3 = Down(input_channel = 128,\
                           output_channel = 256,\
+                          num_layers = 4,\
                           has_bn = has_bn)
         self.down4 = Down(input_channel = 256,\
                           output_channel = 512,\
-                          has_bn = has_bn)
-        self.down5 = Down(input_channel = 512,\
-                          output_channel = 512,\
+                          num_layers = 4,\
                           has_bn = has_bn)
         
         #AdaIN layer
-        #Using the same name as the one in UNet to load pretrain weights
         self.bottleneck = AdaIN(input_channel = 512,\
-                           intermediate_channel = 1024,\
+                           intermediate_channel = 512,\
                            has_bn = has_bn)
 
         #in order to get skip connections
         #expanding path won't be packed in a Sequential model
         #this is a mirror of vgg-13
-        self.up1 = Up(input_channel = 1024,\
+        self.up1 = Up(input_channel = 1024 if num_sc>=1 else 512,\
                       intermediate_channel = 512,\
-                      output_channel = 512,\
+                      output_channel = 256,\
                       has_bn = has_bn) #input should be the output of
                                        #previous layer + skip connection
                                        #so the amount of channels should
                                        #be doubled
-        self.up2 = Up(input_channel = 1024,\
-                      intermediate_channel = 512,\
-                      output_channel = 256,\
-                      has_bn = has_bn) #as stated above, the input_channel
-                                       #should be twice as the output_channel
-                                       #of previous layer
-        self.up3 = Up(input_channel = 512,\
+        self.up2 = Up(input_channel = 512 if num_sc>=2 else 256,\
                       intermediate_channel = 256,\
                       output_channel = 128,\
                       has_bn = has_bn) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
-        self.up4 = Up(input_channel = 256,\
+        self.up3 = Up(input_channel = 256 if num_sc>=3 else 128,\
                       intermediate_channel = 128,\
                       output_channel = 64,\
                       has_bn = has_bn) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
-        self.up5 = Up(input_channel = 128,\
+        self.up4 = Up(input_channel = 128 if num_sc>=4 else 64,\
                       intermediate_channel = 64,\
                       output_channel = 64,\
                       has_bn = has_bn,\
@@ -114,17 +106,21 @@ class UAdaINModel(nn.Module):
         self.down2.requires_grad_(requires_grad=False)
         self.down3.requires_grad_(requires_grad=False)
         self.down4.requires_grad_(requires_grad=False)
-        self.down5.requires_grad_(requires_grad=False)
+        self.bottleneck.freeze_encoder()
 
     def load_vgg_weights(self):
         #load vgg weights to contracting path
-        vgg = torchvision.models.vgg13_bn(weights='DEFAULT') if self.has_bn\
-            else torchvision.models.vgg13(weights='DEFAULT')
+        vgg = torchvision.models.vgg19_bn(weights='DEFAULT') if self.has_bn\
+            else torchvision.models.vgg19(weights='DEFAULT')
+
+        #determine slice
+        slice = 42 if self.has_bn else 29
 
         #copy and paste weights
         for uadain_param, vgg_param in zip(self.named_parameters(),\
-                                       vgg.features.named_parameters()):
+                                       vgg.features[:slice].named_parameters()):
             with torch.no_grad():
+                print(uadain_param[0])
                 uadain_param[1].requires_grad_(requires_grad=False)
                 uadain_param[1].copy_(vgg_param[1])
 
@@ -136,8 +132,7 @@ class UAdaINModel(nn.Module):
         return torch.mean(x, dim=[2,3], keepdim=True),\
                torch.std(x, unbiased = False, dim=[2,3], keepdim=True)+1e-6
 
-    def skip_connections(self, down_feature, up_feature,\
-                         style_mean, style_std):
+    def skip_connections(self, down_feature, up_feature, style_feature):
         #helper method for generating skip connections
         #the input of down_feature should be from contracting path with shape:
         #    [batch, channel, down_height, down_width]
@@ -151,21 +146,12 @@ class UAdaINModel(nn.Module):
         #the output should have shape:
         #    [batch, channel*2, up_height, up_width]
 
-        down_height = down_feature.shape[2]
-        down_width = down_feature.shape[3]
-        up_height = up_feature.shape[2]
-        up_width = up_feature.shape[3]
-
-        height_start_index = (down_height-up_height)//2
-        width_start_index = (down_width-up_width)//2
-
         #calc original mean and std
         down_mean, down_std = self.calc_mean_and_std(down_feature)
+        style_mean, style_std = self.calc_mean_and_std(style_feature)
 
-        #crop down_feature
-        sc = down_feature[:,:,\
-                          height_start_index : height_start_index+up_height,\
-                          width_start_index : width_start_index+up_width]
+        #get skip connections
+        sc = down_feature
 
         #adain
         if self.sc_adain:
@@ -176,124 +162,96 @@ class UAdaINModel(nn.Module):
 
         return re
 
+    def get_skip_input(self, down_feature, up_feature, style_feature, num):
+        #helper method to get actual input for upsampling layers
+        if num > self.num_sc:
+            return up_feature
+        else:
+            return self.skip_connections(down_feature,\
+                                         up_feature,\
+                                         style_feature)
+
     def get_encoded_feature(self, x):
         #the input x will go through contracting part to get
         #encoded feature of x
         #this method is used for computing content loss
 
-        x = self.pad(x)
+        map, skip1 = self.down1(x)
+        map, skip2 = self.down2(map)
+        map, skip3 = self.down3(map)
+        map, skip4 = self.down4(map)
+        map = self.bottleneck.conv1(map)
 
-        map,_ = self.down1(x)
-        map_mean1, map_std1 = self.calc_mean_and_std(map)
-
-        map,_ = self.down2(map)
-        map_mean2, map_std2 = self.calc_mean_and_std(map)
-
-        map,_ = self.down3(map)
-        map_mean3, map_std3 = self.calc_mean_and_std(map)
-
-        map,_ = self.down4(map)
-        map_mean4, map_std4 = self.calc_mean_and_std(map)
-
-        map,_ = self.down5(map)
-        map_mean5, map_std5 = self.calc_mean_and_std(map)
-
-        return map,\
-               [map_mean1, map_mean2, map_mean3, map_mean4, map_mean5],\
-               [map_std1, map_std2, map_std3, map_std4, map_std5]
+        return map, [skip1, skip2, skip3, skip4]
 
     def forward(self, x):
         #extract content and style
         content, style = x
 
-        #apply paddings
-        content = self.pad(content)
-        style = self.pad(style)
+        #extract feature map of content
+        content_feature_map, content_sc1 = self.down1(content)
+        content_feature_map, content_sc2 = self.down2(content_feature_map)
+        content_feature_map, content_sc3 = self.down3(content_feature_map)
+        content_feature_map, content_sc4 = self.down4(content_feature_map)
 
         #extract feature map of content
-        content_feature_map, sc1 = self.down1(content)
-        content_feature_map, sc2 = self.down2(content_feature_map)
-        content_feature_map, sc3 = self.down3(content_feature_map)
-        content_feature_map, sc4 = self.down4(content_feature_map)
-        content_feature_map, sc5 = self.down5(content_feature_map)
-
-        #extract feature map of content
-        style_feature_map,_ = self.down1(style)
-        style_mean1, style_std1 = self.calc_mean_and_std(style_feature_map)
-
-        style_feature_map,_ = self.down2(style_feature_map)
-        style_mean2, style_std2 = self.calc_mean_and_std(style_feature_map)
-
-        style_feature_map,_ = self.down3(style_feature_map)
-        style_mean3, style_std3 = self.calc_mean_and_std(style_feature_map)
-
-        style_feature_map,_ = self.down4(style_feature_map)
-        style_mean4, style_std4 = self.calc_mean_and_std(style_feature_map)
-
-        style_feature_map,_ = self.down5(style_feature_map)
-        style_mean5, style_std5 = self.calc_mean_and_std(style_feature_map)
+        style_feature_map, style_sc1 = self.down1(style)
+        style_feature_map, style_sc2 = self.down2(style_feature_map)
+        style_feature_map, style_sc3 = self.down3(style_feature_map)
+        style_feature_map, style_sc4 = self.down4(style_feature_map)
 
         #adain
         latent, transformed_map = self.bottleneck((content_feature_map, style_feature_map))
 
         #upsampling with skip-connections
-        latent = self.skip_connections(down_feature = sc5,\
-                                       up_feature = latent,\
-                                       style_mean = style_mean5,\
-                                       style_std = style_std5)
+        latent = self.get_skip_input(content_sc4, latent, style_sc4, 1)
         latent = self.up1(latent)
-        latent = self.skip_connections(down_feature = sc4,\
-                                       up_feature = latent,\
-                                       style_mean = style_mean4,\
-                                       style_std = style_std4)
+        latent = self.get_skip_input(content_sc3, latent, style_sc3, 2)
         latent = self.up2(latent)
-        latent = self.skip_connections(down_feature = sc3,\
-                                       up_feature = latent,\
-                                       style_mean = style_mean3,\
-                                       style_std = style_std3)
+        latent = self.get_skip_input(content_sc2, latent, style_sc2, 3)
         latent = self.up3(latent)
-        latent = self.skip_connections(down_feature = sc2,\
-                                       up_feature = latent,\
-                                       style_mean = style_mean2,\
-                                       style_std = style_std2)
+        latent = self.get_skip_input(content_sc1, latent, style_sc1, 4)
         latent = self.up4(latent)
-        latent = self.skip_connections(down_feature = sc1,\
-                                       up_feature = latent,\
-                                       style_mean = style_mean1,\
-                                       style_std = style_std1)
-        latent = self.up5(latent)
 
         #output
         out = self.output(latent)
 
         return out, transformed_map,\
-               [style_mean1, style_mean2, style_mean3, style_mean4, style_mean5],\
-               [style_std1, style_std2, style_std3, style_std4, style_std5]
+               [style_sc1, style_sc2, style_sc3, style_sc4]
 
 '''
 Loss function for UAdaIN
 '''
 class UAdaINLoss(nn.Module):
-    def __init__(self, alpha=0.3):
+    def __init__(self, alpha=0.3, num_sc=2):
         super(UAdaINLoss, self).__init__()
         self.mse = F.mse_loss
         self.alpha = alpha
+        self.num_sc = 2
     
+    def calc_style_loss(self, out_feature, style_feature):
+        #find mean and std
+        out_mean = torch.mean(out_feature, dim=[2,3])
+        out_std = torch.std(out_feature, dim=[2,3])
+        style_mean = torch.mean(style_feature, dim=[2,3])
+        style_std = torch.std(style_feature, dim=[2,3])
+
+        mean_loss = self.mse(out_mean, style_mean)
+        std_loss = self.mse(out_std, style_std)
+
+        return mean_loss + std_loss
+
+
     def forward(self, x):
         #expecting x to be a tuple containing:
-        #   (out_map, transformed_map, out_means, style_means, out_stds, style_stds)
-        out_map, transformed_map, out_means, style_means, out_stds, style_stds = x
+        #   (out_map, transformed_map, out_encoded, style_encoded)
+        out_map, transformed_map, out_encoded, style_encoded = x
         content_loss = self.mse(out_map, transformed_map)
 
         style_loss = 0
-        for i in range(len(out_means)):
-            #compute mean loss
-            mean_loss = self.mse(out_means[i], style_means[i])
-            #compute std means
-            std_loss = self.mse(out_stds[i], style_stds[i])
-            #addup
-            total_loss = mean_loss + std_loss
-            style_loss = style_loss + total_loss
+        for i in range(self.num_sc):
+            style_loss = style_loss + self.calc_style_loss(out_encoded[-(1+i)],\
+                                                           style_encoded[-(1+i)])
 
         return content_loss + self.alpha * style_loss
 
@@ -303,9 +261,9 @@ Application class for UAdaIN,
 class UAdaIN:
     
     def __init__(self, input_channel=3, device = None,\
-                 dataset = None,batch_size = 4, lr = 0.001,\
-                 has_bn = False, sc_adain = True, prev_weights = None,\
-                 alpha = 0.5, pretrain = False):
+                 dataset = None, batch_size = 4, lr = 0.001,\
+                 has_bn = False, sc_adain = True, num_sc = 2,\
+                 alpha = 0.5, prev_weights = None, pretrain = False):
         #initialize device if not specified
         self.device = device
         if not self.device:
@@ -343,8 +301,8 @@ class UAdaIN:
         #before feeding the model, prepad the input so that it can
         #fulfil the requirements of the model
         
-        height_pad = 32 - input_.shape[2] % 32
-        width_pad = 32 - input_.shape[3] % 32
+        height_pad = 16 - input_.shape[2] % 16
+        width_pad = 16 - input_.shape[3] % 16
         up = height_pad // 2
         down = height_pad - up
         left = width_pad // 2
@@ -408,7 +366,7 @@ class UAdaIN:
                 output = self.model((padded_content, padded_style))
 
                 #unpack output
-                out_img, transformed_map, style_means, style_stds = output
+                out_img, transformed_map, encoded_style = output
 
                 #calculate loss
                 if self.pretrain:
@@ -418,10 +376,9 @@ class UAdaIN:
                     loss_ = self.loss(out_img, content)
                 else:
                     #calculate new featuremap
-                    out_map, out_means, out_stds = self.model.get_encoded_feature(out_img)
+                    out_map, encoded_out = self.model.get_encoded_feature(out_img)
                     loss_ = self.loss((out_map, transformed_map,\
-                                       out_means, style_means,\
-                                       out_stds, style_stds))
+                                       encoded_out, encoded_style))
                 loss_.backward()
                 self.optimizer.step()
 
@@ -430,7 +387,7 @@ class UAdaIN:
                 avg_save_loss.append(loss_.detach())
 
                 #check save model
-                if not (step%steps_to_save and step):
+                if (not step%steps_to_save) and step:
                     self.save_model(model_dir, i, step,\
                                     sum(avg_save_loss)/len(avg_save_loss),\
                                     maximum_model)
