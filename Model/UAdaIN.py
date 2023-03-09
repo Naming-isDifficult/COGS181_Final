@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torchvision
 import matplotlib.pyplot as plt
 import datetime, os
+from tqdm import tqdm
 
 '''
 The model. I name it UAdaIN, though I'm bad at naming.
@@ -58,7 +59,8 @@ class UAdaINModel(nn.Module):
         #AdaIN layer
         self.bottleneck = AdaIN(input_channel = 512,\
                            intermediate_channel = 512,\
-                           has_bn = has_bn)
+                           has_bn = has_bn,\
+                           use_up_conv = False)
 
         #in order to get skip connections
         #expanding path won't be packed in a Sequential model
@@ -66,27 +68,35 @@ class UAdaINModel(nn.Module):
         self.up1 = Up(input_channel = 1024 if num_sc>=1 else 512,\
                       intermediate_channel = 512,\
                       output_channel = 256,\
-                      has_bn = has_bn) #input should be the output of
+                      num_layers = 4,\
+                      has_bn = has_bn,\
+                      use_up_conv = False) #input should be the output of
                                        #previous layer + skip connection
                                        #so the amount of channels should
                                        #be doubled
         self.up2 = Up(input_channel = 512 if num_sc>=2 else 256,\
                       intermediate_channel = 256,\
                       output_channel = 128,\
-                      has_bn = has_bn) #as stated above, the input_channel
+                      num_layers = 4,\
+                      has_bn = has_bn,\
+                      use_up_conv = False) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
         self.up3 = Up(input_channel = 256 if num_sc>=3 else 128,\
                       intermediate_channel = 128,\
                       output_channel = 64,\
-                      has_bn = has_bn) #as stated above, the input_channel
+                      num_layers = 2,\
+                      has_bn = has_bn,\
+                      use_up_conv = False) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
         self.up4 = Up(input_channel = 128 if num_sc>=4 else 64,\
                       intermediate_channel = 64,\
                       output_channel = 64,\
+                      num_layers = 2,\
                       has_bn = has_bn,\
-                      last_layer = True) #as stated above, the input_channel
+                      last_layer = True,\
+                      use_up_conv = False) #as stated above, the input_channel
                                          #should be twice as the output_channel
                                          #of previous layer
                                          #as the last up-sampling layer,
@@ -120,7 +130,6 @@ class UAdaINModel(nn.Module):
         for uadain_param, vgg_param in zip(self.named_parameters(),\
                                        vgg.features[:slice].named_parameters()):
             with torch.no_grad():
-                print(uadain_param[0])
                 uadain_param[1].requires_grad_(requires_grad=False)
                 uadain_param[1].copy_(vgg_param[1])
 
@@ -273,11 +282,13 @@ class UAdaIN:
 
         #initialize model
         self.model = UAdaINModel(input_channel = input_channel,\
-                               has_bn = has_bn, sc_adain = sc_adain)
+                               has_bn = has_bn, sc_adain = sc_adain,\
+                               num_sc = num_sc)
         if(prev_weights is not None):
             weights = torch.load(prev_weights)
             self.model.load_state_dict(weights)
         else:
+            #load vgg
             if input_channel == 3:
                 self.model.load_vgg_weights()
             else:
@@ -303,6 +314,8 @@ class UAdaIN:
         
         height_pad = 16 - input_.shape[2] % 16
         width_pad = 16 - input_.shape[3] % 16
+        height_pad = 0 if height_pad==16 else height_pad
+        width_pad = 0 if width_pad==16 else width_pad
         up = height_pad // 2
         down = height_pad - up
         left = width_pad // 2
@@ -350,7 +363,7 @@ class UAdaIN:
             avg_save_loss = []
 
             #training process
-            for _, data in enumerate(loader):
+            for _, data in enumerate(tqdm(loader)):
                 content, style = data
                 if self.pretrain:
                     style = content
@@ -383,8 +396,8 @@ class UAdaIN:
                 self.optimizer.step()
 
                 #save loss
-                avg_loss.append(loss_.detach())
-                avg_save_loss.append(loss_.detach())
+                avg_loss.append(loss_.detach().cpu())
+                avg_save_loss.append(loss_.detach().cpu())
 
                 #check save model
                 if (not step%steps_to_save) and step:
@@ -398,9 +411,6 @@ class UAdaIN:
                     torch.cuda.empty_cache()
 
                 #next step
-                print("Epoch: {e}, Step: {s}, Loss:{l}".format(e = i,\
-                                                               s = step,\
-                                                               l = loss_))
                 step = step + 1
 
             #save the model after epoch

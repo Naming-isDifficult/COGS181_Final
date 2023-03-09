@@ -91,6 +91,7 @@ class Up(nn.Module):
                  intermediate_channel,\
                  output_channel,\
                  num_layers=2, has_bn=False,\
+                 use_up_conv=True,\
                  last_layer=False):
         super(Up, self).__init__()
 
@@ -99,20 +100,33 @@ class Up(nn.Module):
         self.conv_layers.append(get_conv_module(input_channel,\
                                                 intermediate_channel,\
                                                 has_bn)) #input layer
-        for i in range(num_layers-1):
+        for i in range(num_layers-2):
             #output of second last layer should be determined later
             self.conv_layers.append(get_conv_module(intermediate_channel,\
                                                     intermediate_channel,\
+                                                    has_bn)) #intermediate layer
+        
+        #add the last layer according to up_conv or not
+        if use_up_conv:
+            self.conv_layers.append(get_conv_module(intermediate_channel,\
+                                                    intermediate_channel,\
+                                                    has_bn)) #intermediate layer
+        else:
+            self.conv_layers.append(get_conv_module(intermediate_channel,\
+                                                    output_channel,\
                                                     has_bn)) #intermediate layer
 
         #up-conv
         self.up = None
         if not last_layer:
-            self.up = nn.ConvTranspose2d(\
-                          in_channels = intermediate_channel,\
-                          out_channels = output_channel,\
-                          kernel_size = (2,2),\
-                          stride = 2)
+            if use_up_conv:
+                self.up = nn.ConvTranspose2d(\
+                            in_channels = intermediate_channel,\
+                            out_channels = output_channel,\
+                            kernel_size = (2,2),\
+                            stride = 2)
+            else:
+                self.up = nn.Upsample(scale_factor = 2, mode = 'nearest')
 
     def forward(self, x):
         out = x
@@ -151,7 +165,7 @@ The transformed map has shape:
 class AdaIN(nn.Module):
 
     def __init__(self, input_channel, intermediate_channel,\
-               has_bn=False):
+                 use_up_conv=True, has_bn=False):
         super(AdaIN, self).__init__()
 
         #the first convolution layer
@@ -161,15 +175,19 @@ class AdaIN(nn.Module):
 
         #the second convolution layer
         self.conv2 = get_conv_module(intermediate_channel,\
-                                     intermediate_channel,\
+                                     intermediate_channel if use_up_conv\
+                                     else input_channel,\
                                      has_bn)
 
         #up-conv
-        self.up_conv = nn.ConvTranspose2d(\
-                          in_channels = intermediate_channel,\
-                          out_channels = input_channel,\
-                          kernel_size = (2,2),\
-                          stride = 2) #output_channel=input_channel
+        if use_up_conv:
+            self.up = nn.ConvTranspose2d(\
+                        in_channels = intermediate_channel,\
+                        out_channels = input_channel,\
+                        kernel_size = (2,2),\
+                        stride = 2) #output_channel=input_channel
+        else:
+            self.up = nn.Upsample(scale_factor = 2, mode = 'nearest')
 
     #helper method to calculate instance mean
     #assuming x.shape = [batch, channel, height, width]
@@ -216,6 +234,6 @@ class AdaIN(nn.Module):
 
         #conv
         out = self.conv2(latent)
-        out = self.up_conv(out)
+        out = self.up(out)
 
         return out, latent
