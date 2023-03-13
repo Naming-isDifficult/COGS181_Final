@@ -232,11 +232,10 @@ class UAdaINModel(nn.Module):
 Loss function for UAdaIN
 '''
 class UAdaINLoss(nn.Module):
-    def __init__(self, alpha=0.3, num_sc=2):
+    def __init__(self, alpha=0.3):
         super(UAdaINLoss, self).__init__()
         self.mse = F.mse_loss
         self.alpha = alpha
-        self.num_sc = 2
     
     def calc_style_loss(self, out_feature, style_feature):
         #find mean and std
@@ -258,9 +257,9 @@ class UAdaINLoss(nn.Module):
         content_loss = self.mse(out_map, transformed_map)
 
         style_loss = 0
-        for i in range(self.num_sc):
-            style_loss = style_loss + self.calc_style_loss(out_encoded[-(1+i)],\
-                                                           style_encoded[-(1+i)])
+        for i in range(len(out_encoded)):
+            style_loss = style_loss + self.calc_style_loss(out_encoded[i],\
+                                                           style_encoded[i])
 
         return content_loss + self.alpha * style_loss
 
@@ -420,7 +419,7 @@ class UAdaIN:
             
             #show the result
             if display:
-                out_img = out_img.detach().cpu().squeeze().permute((1,2,0)).numpy()
+                out_img = out_img[0].detach().cpu().squeeze().permute((1,2,0)).numpy()
                 plt.imshow(out_img)
                 plt.show()
 
