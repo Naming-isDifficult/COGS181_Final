@@ -30,7 +30,8 @@ The model will automatically apply paddings.
 '''
 class UAdaINModel(nn.Module):
 
-    def __init__(self, input_channel, has_bn=False, num_sc=3, sc_adain=True):
+    def __init__(self, input_channel, has_bn=False, num_sc=3,\
+                 sc_adain=True, num_layers = [3,3,1,2], use_up_conv = True):
         super(UAdaINModel, self).__init__()
         self.has_bn = has_bn
         self.sc_adain = sc_adain
@@ -60,7 +61,7 @@ class UAdaINModel(nn.Module):
         self.bottleneck = AdaIN(input_channel = 512,\
                            intermediate_channel = 512,\
                            has_bn = has_bn,\
-                           use_up_conv = False)
+                           use_up_conv = use_up_conv)
 
         #in order to get skip connections
         #expanding path won't be packed in a Sequential model
@@ -68,35 +69,34 @@ class UAdaINModel(nn.Module):
         self.up1 = Up(input_channel = 1024 if num_sc>=1 else 512,\
                       intermediate_channel = 512,\
                       output_channel = 256,\
-                      num_layers = 4,\
+                      num_layers = num_layers[0],\
                       has_bn = has_bn,\
-                      use_up_conv = False) #input should be the output of
+                      use_up_conv = use_up_conv) #input should be the output of
                                        #previous layer + skip connection
                                        #so the amount of channels should
                                        #be doubled
         self.up2 = Up(input_channel = 512 if num_sc>=2 else 256,\
                       intermediate_channel = 256,\
                       output_channel = 128,\
-                      num_layers = 4,\
+                      num_layers = num_layers[1],\
                       has_bn = has_bn,\
-                      use_up_conv = False) #as stated above, the input_channel
+                      use_up_conv = use_up_conv) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
         self.up3 = Up(input_channel = 256 if num_sc>=3 else 128,\
                       intermediate_channel = 128,\
                       output_channel = 64,\
-                      num_layers = 2,\
+                      num_layers = num_layers[2],\
                       has_bn = has_bn,\
-                      use_up_conv = False) #as stated above, the input_channel
+                      use_up_conv = use_up_conv) #as stated above, the input_channel
                                        #should be twice as the output_channel
                                        #of previous layer
         self.up4 = Up(input_channel = 128 if num_sc>=4 else 64,\
                       intermediate_channel = 64,\
                       output_channel = 64,\
-                      num_layers = 2,\
+                      num_layers = num_layers[3],\
                       has_bn = has_bn,\
-                      last_layer = True,\
-                      use_up_conv = False) #as stated above, the input_channel
+                      last_layer = True) #as stated above, the input_channel
                                          #should be twice as the output_channel
                                          #of previous layer
                                          #as the last up-sampling layer,
@@ -271,7 +271,8 @@ class UAdaIN:
     def __init__(self, input_channel=3, device = None,\
                  dataset = None, batch_size = 4, lr = 0.001,\
                  has_bn = False, sc_adain = True, num_sc = 2,\
-                 alpha = 0.5, prev_weights = None, pretrain = False):
+                 num_layers = [3,3,1,2], use_up_conv = True,\
+                 alpha = 1, prev_weights = None, pretrain = False):
         #initialize device if not specified
         self.device = device
         if not self.device:
@@ -282,7 +283,8 @@ class UAdaIN:
         #initialize model
         self.model = UAdaINModel(input_channel = input_channel,\
                                has_bn = has_bn, sc_adain = sc_adain,\
-                               num_sc = num_sc)
+                               num_sc = num_sc, num_layers = num_layers,\
+                               use_up_conv = use_up_conv)
         if(prev_weights is not None):
             weights = torch.load(prev_weights)
             self.model.load_state_dict(weights)

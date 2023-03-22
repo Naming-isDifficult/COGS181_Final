@@ -107,11 +107,11 @@ class Up(nn.Module):
                                                     has_bn)) #intermediate layer
         
         #add the last layer according to up_conv or not
-        if use_up_conv:
+        if use_up_conv and num_layers != 1:
             self.conv_layers.append(get_conv_module(intermediate_channel,\
                                                     intermediate_channel,\
                                                     has_bn)) #intermediate layer
-        else:
+        elif num_layers != 1:
             self.conv_layers.append(get_conv_module(intermediate_channel,\
                                                     output_channel,\
                                                     has_bn)) #intermediate layer
