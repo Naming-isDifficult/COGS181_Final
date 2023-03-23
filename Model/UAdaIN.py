@@ -280,14 +280,23 @@ class UAdaIN:
                                        else "cpu")
         self.pretrain = pretrain
 
-        #initialize model
+        #initialize epoch
+        self.current_epoch = 0
+
+        #initialize model, loss and optimizer
         self.model = UAdaINModel(input_channel = input_channel,\
                                has_bn = has_bn, sc_adain = sc_adain,\
                                num_sc = num_sc, num_layers = num_layers,\
                                use_up_conv = use_up_conv)
+        self.model.to(self.device)
+        self.loss = nn.MSELoss() if pretrain\
+                    else UAdaINLoss(alpha)
+        self.loss.to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+
+        #load weights
         if(prev_weights is not None):
-            weights = torch.load(prev_weights)
-            self.model.load_state_dict(weights)
+            self.load_model(prev_weights)
         else:
             #load vgg
             if input_channel == 3:
@@ -295,14 +304,7 @@ class UAdaIN:
             else:
                 print('Using default weights is not encouraged,'+\
                       ' please pretrain your own network first.')
-        self.model.to(self.device)
         self.model.freeze_encoder()
-
-        #initialize loss func and optimizer
-        self.loss = nn.MSELoss() if pretrain\
-                    else UAdaINLoss(alpha)
-        self.loss.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         
         #initialize dataset, loader will be initilized at the
         #beginning at each epoch to ensure shuffling
@@ -332,7 +334,12 @@ class UAdaIN:
                                                     .format(current_epoch = epoch,\
                                                             current_step = step,\
                                                             current_loss = loss)
-        torch.save(self.model.state_dict(), os.path.join(model_dir, model_name))
+        checkpoint = {
+            'epoch': epoch,
+            'state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict()
+        }
+        torch.save(checkpoint, os.path.join(model_dir, model_name))
 
         #check model num
         file_list = os.listdir(model_dir)
@@ -341,6 +348,13 @@ class UAdaIN:
             file_list.sort(key=lambda x: os.path.getmtime(
                                          os.path.join(model_dir, x)))
             os.remove(os.path.join(model_dir, file_list[0]))
+
+    def load_model(self, model_dir):
+        #load the model from checkpoint
+        checkpoint = torch.load(model_dir)
+        self.current_epoch = checkpoint['epoch'] + 1
+        self.model.load_state_dict(checkpoint['state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
 
     def train(self, epoch=10, model_dir=None,\
               steps_to_save = 10, maximum_model=5,\
@@ -354,7 +368,7 @@ class UAdaIN:
         if not os.path.isdir(model_dir):
             os.makedirs(model_dir)
 
-        for i in range(epoch):
+        while self.current_epoch < epoch:
             #initialize step and dataloader
             step = 0
             loader = DataLoader(dataset = self.dataset,\
@@ -402,7 +416,7 @@ class UAdaIN:
 
                 #check save model
                 if (not step%steps_to_save) and step:
-                    self.save_model(model_dir, i, step,\
+                    self.save_model(model_dir, self.current_epoch, step,\
                                     sum(avg_save_loss)/len(avg_save_loss),\
                                     maximum_model)
                     avg_save_loss = []
@@ -415,9 +429,10 @@ class UAdaIN:
                 step = step + 1
 
             #save the model after epoch
-            self.save_model(model_dir, i, step,\
+            self.save_model(model_dir, self.current_epoch, step,\
                             sum(avg_loss)/len(avg_loss),\
                             maximum_model)
+            self.current_epoch = self.current_epoch + 1
             
             #show the result
             if display:
