@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.utils.data as data
 import os
 import random
@@ -41,7 +42,11 @@ class ContentStyleDataSet(data.Dataset):
         self.style_folder = style_folder
         self.style_img = [file for file in file_generator(style_folder)]
 
-        self.transer = transforms.ToTensor()
+        self.transer_resize = nn.Sequential(
+            transforms.Resize(512),\
+            transforms.CenterCrop(512),\
+        )
+        self.transer_tensor = transforms.ToTensor()
         self.device = device
 
     def __getitem__(self, index):
@@ -52,10 +57,12 @@ class ContentStyleDataSet(data.Dataset):
         #   [channel, height, width]
         #and the ordering of channels is R G B
         content = Image.open(self.content_img[index])
-        content_tensor = self.transer(content)
+        content = self.transer_resize(content)
+        content_tensor = self.transer_tensor(content)
 
         style = Image.open(random.choice(self.style_img))
-        style_tensor = self.transer(style)
+        style = self.transer_resize(style)
+        style_tensor = self.transer_tensor(style)
         
         return content_tensor.to(self.device),\
                style_tensor.to(self.device)
